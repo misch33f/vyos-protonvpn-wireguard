@@ -1,0 +1,207 @@
+Credit to the following blog post which described the process for acheiving this setup using Mullvad and WireGuard.
+
+https://hedberg.io/vyos-policy-based-routing-with-wireguard/
+
+This guide walks you through setting up policy based routing on VyOS using ProtonVPN and WireGuard.  You will be able to specify devices/networks that should be routed across the VPN and devices/networks that should bypass the VPN.
+
+
+
+As of this time, ProtonVPN hardcodes their clients to use the same internal IP address of 10.2.0.2.  You will need to configure your WireGuard interface with this IP as well.
+
+https://protonvpn.com/support/wireguard-privacy
+
+
+
+Login to ProtonVPN and generate a WireGuard configuration for the country of your choice:
+
+https://account.protonvpn.com/downloads
+
+Scroll down to the WireGuard configuration section:
+
+    1. Give an appropriate name (ie. US#47 or CH-NL)
+    2. Select 'Router'
+    3. N/A - These settings only work with the ProtonVPN client apps 
+    4. Select your standard server or secure core server
+    5. Select 'Create'
+
+A config will be generated.  You can copy out the necessary information into the configurations below, as well as save the config file.
+
+Login to your VyOS firewall and enter config mode:
+
+    admin@vyos:~$ conf
+    admin@vyos#
+
+Create your wireguard interface using the parameters from your ProtonVPN WireGuard config file.  You can name the peer descriptevely as shown (US#47):
+
+    set interfaces wireguard wg0 address '10.2.0.2/32'
+    set interfaces wireguard wg0 description 'ProtonVPN'
+    set interfaces wireguard wg0 peer US#47 address 'XX.XX.XX.XX' ### Enter the ProtonVPN Endpoint from your config file ###
+    set interfaces wireguard wg0 peer US#47 allowed-ips '0.0.0.0/0'
+    set interfaces wireguard wg0 peer US#47 persistent-keepalive '20'
+    set interfaces wireguard wg0 peer US#47 port '51820'
+    set interfaces wireguard wg0 peer US#47 public-key 'XXxxXXxx-PuBlIc-KeY'### Enter the ProtonVPN PublicKey from your config file ###
+    set interfaces wireguard wg0 private-key 'XXxxXXxx-PrIvAtE-KeY' ### Enter the ProtonVPN PrivateKey from your config file ###
+
+Next, you will need to create a few firewall groups.  These groups are be used to determine which clients will route through the VPN and which ones bypass the VPN.
+
+This group specifies a group of networks that should be routed across the VPN:
+
+    set firewall group network-group VPN description '##### VPN ROUTED NETWORKS #####'
+    set firewall group network-group VPN include '10.10.10.0/24'
+    set firewall group network-group VPN include '10.10.20.0/24'
+    set firewall group network-group VPN include '10.10.30.0/24'
+
+This group specifies a group of IPs that should bypass the VPN:
+
+    set firewall group address-group NonVPN description '##### NON VPN ROUTED CLIENTS #####'
+    set firewall group address-group NonVPN address '10.10.10.10'
+    set firewall group address-group NonVPN address '10.10.10.20'
+    set firewall group address-group NonVPN address '10.10.20.10'
+    set firewall group address-group NonVPN address '10.10.20.20'
+    set firewall group address-group NonVPN address '10.10.30.10'
+    set firewall group address-group NonVPN address '10.10.30.20'
+
+This group specifies the RFC1918 networks, which are private networks, that should not be routed across the VPN:
+
+    set firewall group network-group RFC1918 description '##### RFC1918 NETWORKS #####'
+    set firewall group network-group RFC1918 network '192.168.0.0/16'
+    set firewall group network-group RFC1918 network '172.16.0.0/12'
+    set firewall group network-group RFC1918 network '10.0.0.0/8'
+
+Now you will need to setup policy based routing for the VPN.  The lower the rule number the higher the precedence.  Therefore, the first rule that matches is used.
+
+Rule 1 instructs all traffic with a destination of any private network address to bypass the the VPN and use the main routing table.
+Rule 10 instructs all traffic with a source address matching the NonVPN group to bypass the VPN and use the main routing table.
+Rule 100 instructs all traffic with a source address matching the VPN group to use the VPN and follow routing table 100.
+
+    set policy route VPN rule 1 description 'Local Networks'
+    set policy route VPN rule 1 destination group network-group 'RFC1918'
+    set policy route VPN rule 1 set table 'main'
+    set policy route VPN rule 10 description 'NonVPN'
+    set policy route VPN rule 10 set table 'main'
+    set policy route VPN rule 10 source group address-group 'NonVPN'
+    set policy route VPN rule 100 description 'ProtonVPN'
+    set policy route VPN rule 100 destination address '0.0.0.0/0'
+    set policy route VPN rule 100 set table '100'
+    set policy route VPN rule 100 source group network-group 'VPN'
+
+Next you need to apply this policy to your LAN interfaces.  In my case, I have a bond interface that carries multiple VLANs:
+
+    set policy route VPN interface 'bond0' ### Replace with your firewall LAN interface ###
+
+Now that the policy based routing is setup, you need to define the routes to match the policy:
+
+The first route is the default route for the main table, which you probably already have in place, and routes traffic out your WAN.
+The second route is the default route for table 100, which you defined in the VPN policy above, and will be used by all traffic that you want routed out the VPN.
+
+    set protocols static route 0.0.0.0/0 next-hop XX.XX.XX.XX
+    set protocols static table 100 route 0.0.0.0/0 interface wg0
+
+You will need to create an additional source NAT rule for traffic that egresses the VPN:
+
+Rule 100 is the masquerade rule that you probably already have in place for your WAN.
+Rule 101 is the masquerade rule for traffic that egresses the ProtonVPN WireGuard interface.
+
+    set nat source rule 100 log
+    set nat source rule 100 outbound-interface name 'eth0' ### Replace with your WAN interface ###
+    set nat source rule 100 translation address 'masquerade'
+    set nat source rule 101 log
+    set nat source rule 101 outbound-interface name 'wg0' ### Replace with your WireGuard interface ###
+    set nat source rule 101 translation address 'masquerade'
+
+Next, you will need to create a few firewall rules to allow this traffic to pass:
+
+This creates a firewall that allows traffic from your LAN zone, where the source networks match your network-group 'VPN' created above, to route across the VPN:
+
+    set firewall ipv4 name LAN-VPN default-action 'drop'
+    set firewall ipv4 name LAN-VPN default-log
+    set firewall ipv4 name LAN-VPN rule 1 action 'accept'
+    set firewall ipv4 name LAN-VPN rule 1 description '##### ACCEPT ESTABLISHED/RELATED #####'
+    set firewall ipv4 name LAN-VPN rule 1 state 'established'
+    set firewall ipv4 name LAN-VPN rule 1 state 'related'
+    set firewall ipv4 name LAN-VPN rule 2 action 'drop'
+    set firewall ipv4 name LAN-VPN rule 2 description '##### DROP INVALID #####'
+    set firewall ipv4 name LAN-VPN rule 2 log
+    set firewall ipv4 name LAN-VPN rule 2 state 'invalid'
+    set firewall ipv4 name LAN-VPN rule 5 action 'accept'
+    set firewall ipv4 name LAN-VPN rule 5 description '##### ALLOW VPN ROUTED NETWORKS TO EGRESS VPN #####'
+    set firewall ipv4 name LAN-VPN rule 5 log
+    set firewall ipv4 name LAN-VPN rule 5 source group network-group 'VPN'
+
+This creates a firewall that allows traffic from your LAN zone, where the source networks match your address-group 'NonVPN' created above, to bypass the VPN and route out your WAN:
+
+    set firewall ipv4 name LAN-WAN default-action 'drop'
+    set firewall ipv4 name LAN-WAN default-log
+    set firewall ipv4 name LAN-WAN rule 1 action 'accept'
+    set firewall ipv4 name LAN-WAN rule 1 description '##### ACCEPT ESTABLISHED/RELATED #####'
+    set firewall ipv4 name LAN-WAN rule 1 state 'established'
+    set firewall ipv4 name LAN-WAN rule 1 state 'related'
+    set firewall ipv4 name LAN-WAN rule 2 action 'drop'
+    set firewall ipv4 name LAN-WAN rule 2 description '##### DROP INVALID #####'
+    set firewall ipv4 name LAN-WAN rule 2 log
+    set firewall ipv4 name LAN-WAN rule 2 state 'invalid'
+    set firewall ipv4 name LAN-WAN rule 5 action 'accept'
+    set firewall ipv4 name LAN-WAN rule 5 description '##### ALLOW NON VPN CLIENTS TO EGRESS WAN #####'
+    set firewall ipv4 name LAN-WAN rule 5 log
+    set firewall ipv4 name LAN-WAN rule 5 source group address-group 'NonVPN'
+
+If you have a zone based setup (ie. LAN, WAN, LOCAL), it is a good practice to create matching firewalls for each zone as shown below:
+
+    set firewall ipv4 name VPN-LAN default-action 'drop'
+    set firewall ipv4 name VPN-LAN default-log
+    set firewall ipv4 name VPN-LAN rule 1 action 'accept'
+    set firewall ipv4 name VPN-LAN rule 1 description '##### ACCEPT ESTABLISHED #####'
+    set firewall ipv4 name VPN-LAN rule 1 state 'established'
+    set firewall ipv4 name VPN-LAN rule 1 state 'related'
+    set firewall ipv4 name VPN-LAN rule 2 action 'drop'
+    set firewall ipv4 name VPN-LAN rule 2 description '##### DROP INVALID #####'
+    set firewall ipv4 name VPN-LAN rule 2 log
+    set firewall ipv4 name VPN-LAN rule 2 state 'invalid'
+    
+    set firewall ipv4 name WAN-VPN default-action 'drop'
+    set firewall ipv4 name WAN-VPN default-log
+    set firewall ipv4 name WAN-VPN rule 1 action 'accept'
+    set firewall ipv4 name WAN-VPN rule 1 description '##### ACCEPT ESTABLISHED #####'
+    set firewall ipv4 name WAN-VPN rule 1 state 'established'
+    set firewall ipv4 name WAN-VPN rule 1 state 'related'
+    set firewall ipv4 name WAN-VPN rule 2 action 'drop'
+    set firewall ipv4 name WAN-VPN rule 2 description '##### DROP INVALID #####'
+    set firewall ipv4 name WAN-VPN rule 2 log
+    set firewall ipv4 name WAN-VPN rule 2 state 'invalid'
+
+Lastly, you need to create the VPN zone, add the WireGuard as a member interface to it, and apply the firewalls accordingly:
+
+    set firewall zone VPN default-action 'drop'
+    set firewall zone VPN default-log
+    set firewall zone VPN from LAN firewall name 'LAN-VPN'
+    set firewall zone VPN from WAN firewall name 'WAN-VPN'
+    set firewall zone VPN member interface 'wg1'
+
+    set firewall zone LAN from VPN firewall name 'VPN-LAN'
+
+    set firewall zone WAN from VPN firewall name 'VPN-WAN'
+
+You can now commit the changes and test:
+
+    admin@vyos# commit
+
+You can check the status of the WireGuard tunnel as shown below:
+
+    admin@vyos# sudo wg show
+    interface: wg1
+        public key: XXxxXXxxXXxxXXxxXXxxXXxxXXxxXXxxXXxxXXxx=
+        private key: (hidden)
+        listening port: 46625
+
+    peer: XXxxXXxxXXxxXXxxXXxxXXxxXXxxXXxxXXxxXXxx=
+        endpoint: XX.XX.XX.XX:51820
+        allowed ips: 0.0.0.0/0
+        latest handshake: 17 seconds ago
+        transfer: 1.98 TiB received, 224.98 GiB sent
+        persistent keepalive: every 20 seconds
+
+If you have any devices in the 'NonVPN' group, you can test that they should be routing out your WAN connection.  The other devices that fall under the 'VPN' group should be routing out the ProtonVPN WireGuard connection.
+
+Once everything is tested and complete, you can save the configuration:
+
+    admin@vyos# save

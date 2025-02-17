@@ -1,0 +1,116 @@
+conf
+
+set interfaces wireguard wg0 address '10.2.0.2/32'
+set interfaces wireguard wg0 description 'ProtonVPN'
+set interfaces wireguard wg0 peer US47 address 'XX.XX.XX.XX' ### Enter the ProtonVPN Endpoint from your config file ###
+set interfaces wireguard wg0 peer US47 allowed-ips '0.0.0.0/0'
+set interfaces wireguard wg0 peer US47 persistent-keepalive '20'
+set interfaces wireguard wg0 peer US47 port '51820'
+set interfaces wireguard wg0 peer US47 public-key 'XXxxXXxx-PuBlIc-KeY' ### Enter the ProtonVPN PublicKey from your config file ###
+set interfaces wireguard wg0 private-key 'XXxxXXxx-PrIvAtE-KeY' ### Enter the ProtonVPN PrivateKey from your config file ###
+
+set firewall group network-group VPN description '##### VPN ROUTED NETWORKS #####'
+set firewall group network-group VPN include '10.10.10.0/24'
+set firewall group network-group VPN include '10.10.20.0/24'
+set firewall group network-group VPN include '10.10.30.0/24'
+
+set firewall group address-group NonVPN description '##### NON VPN ROUTED CLIENTS #####'
+set firewall group address-group NonVPN address '10.10.10.10'
+set firewall group address-group NonVPN address '10.10.10.20'
+set firewall group address-group NonVPN address '10.10.20.10'
+set firewall group address-group NonVPN address '10.10.20.20'
+set firewall group address-group NonVPN address '10.10.30.10'
+set firewall group address-group NonVPN address '10.10.30.20'
+
+set firewall group network-group RFC1918 description '##### RFC1918 NETWORKS #####'
+set firewall group network-group RFC1918 network '192.168.0.0/16'
+set firewall group network-group RFC1918 network '172.16.0.0/12'
+set firewall group network-group RFC1918 network '10.0.0.0/8'
+
+set policy route VPN rule 1 description 'Local Networks'
+set policy route VPN rule 1 destination group network-group 'RFC1918'
+set policy route VPN rule 1 set table 'main'
+set policy route VPN rule 10 description 'NonVPN'
+set policy route VPN rule 10 set table 'main'
+set policy route VPN rule 10 source group address-group 'NonVPN'
+set policy route VPN rule 100 description 'ProtonVPN'
+set policy route VPN rule 100 destination address '0.0.0.0/0'
+set policy route VPN rule 100 set table '100'
+set policy route VPN rule 100 source group network-group 'VPN'
+
+set policy route VPN interface 'bond0' ### Replace with your firewall LAN interface ###
+
+set protocols static route 0.0.0.0/0 next-hop XX.XX.XX.XX
+set protocols static table 100 route 0.0.0.0/0 interface wg0
+
+set nat source rule 100 log
+set nat source rule 100 outbound-interface name 'eth0' ### Replace with your WAN interface ###
+set nat source rule 100 translation address 'masquerade'
+set nat source rule 101 log
+set nat source rule 101 outbound-interface name 'wg0' ### Replace with your WireGuard interface ###
+set nat source rule 101 translation address 'masquerade'
+
+set firewall ipv4 name LAN-VPN default-action 'drop'
+set firewall ipv4 name LAN-VPN default-log
+set firewall ipv4 name LAN-VPN rule 1 action 'accept'
+set firewall ipv4 name LAN-VPN rule 1 description '##### ACCEPT ESTABLISHED/RELATED #####'
+set firewall ipv4 name LAN-VPN rule 1 state 'established'
+set firewall ipv4 name LAN-VPN rule 1 state 'related'
+set firewall ipv4 name LAN-VPN rule 2 action 'drop'
+set firewall ipv4 name LAN-VPN rule 2 description '##### DROP INVALID #####'
+set firewall ipv4 name LAN-VPN rule 2 log
+set firewall ipv4 name LAN-VPN rule 2 state 'invalid'
+set firewall ipv4 name LAN-VPN rule 5 action 'accept'
+set firewall ipv4 name LAN-VPN rule 5 description '##### ALLOW VPN ROUTED NETWORKS TO EGRESS VPN #####'
+set firewall ipv4 name LAN-VPN rule 5 log
+set firewall ipv4 name LAN-VPN rule 5 source group network-group 'VPN'
+
+set firewall ipv4 name LAN-WAN default-action 'drop'
+set firewall ipv4 name LAN-WAN default-log
+set firewall ipv4 name LAN-WAN rule 1 action 'accept'
+set firewall ipv4 name LAN-WAN rule 1 description '##### ACCEPT ESTABLISHED/RELATED #####'
+set firewall ipv4 name LAN-WAN rule 1 state 'established'
+set firewall ipv4 name LAN-WAN rule 1 state 'related'
+set firewall ipv4 name LAN-WAN rule 2 action 'drop'
+set firewall ipv4 name LAN-WAN rule 2 description '##### DROP INVALID #####'
+set firewall ipv4 name LAN-WAN rule 2 log
+set firewall ipv4 name LAN-WAN rule 2 state 'invalid'
+set firewall ipv4 name LAN-WAN rule 5 action 'accept'
+set firewall ipv4 name LAN-WAN rule 5 description '##### ALLOW NON VPN CLIENTS TO EGRESS WAN #####'
+set firewall ipv4 name LAN-WAN rule 5 log
+set firewall ipv4 name LAN-WAN rule 5 source group address-group 'NonVPN'
+
+set firewall ipv4 name VPN-LAN default-action 'drop'
+set firewall ipv4 name VPN-LAN default-log
+set firewall ipv4 name VPN-LAN rule 1 action 'accept'
+set firewall ipv4 name VPN-LAN rule 1 description '##### ACCEPT ESTABLISHED #####'
+set firewall ipv4 name VPN-LAN rule 1 state 'established'
+set firewall ipv4 name VPN-LAN rule 1 state 'related'
+set firewall ipv4 name VPN-LAN rule 2 action 'drop'
+set firewall ipv4 name VPN-LAN rule 2 description '##### DROP INVALID #####'
+set firewall ipv4 name VPN-LAN rule 2 log
+set firewall ipv4 name VPN-LAN rule 2 state 'invalid'
+
+set firewall ipv4 name WAN-VPN default-action 'drop'
+set firewall ipv4 name WAN-VPN default-log
+set firewall ipv4 name WAN-VPN rule 1 action 'accept'
+set firewall ipv4 name WAN-VPN rule 1 description '##### ACCEPT ESTABLISHED #####'
+set firewall ipv4 name WAN-VPN rule 1 state 'established'
+set firewall ipv4 name WAN-VPN rule 1 state 'related'
+set firewall ipv4 name WAN-VPN rule 2 action 'drop'
+set firewall ipv4 name WAN-VPN rule 2 description '##### DROP INVALID #####'
+set firewall ipv4 name WAN-VPN rule 2 log
+set firewall ipv4 name WAN-VPN rule 2 state 'invalid'
+
+set firewall zone VPN default-action 'drop'
+set firewall zone VPN default-log
+set firewall zone VPN from LAN firewall name 'LAN-VPN'
+set firewall zone VPN from WAN firewall name 'WAN-VPN'
+set firewall zone VPN member interface 'wg1'
+
+set firewall zone LAN from VPN firewall name 'VPN-LAN'
+
+set firewall zone WAN from VPN firewall name 'VPN-WAN'
+
+commit
+save
